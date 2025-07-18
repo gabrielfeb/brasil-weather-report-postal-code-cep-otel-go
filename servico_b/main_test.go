@@ -1,121 +1,75 @@
 package main
 
 import (
-	"bytes"
-	"context"
-	"errors"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
-// --- Mock do Cliente HTTP ---
-
-// 1. Crie uma struct para o mock
-type MockHTTPClient struct {
+// Simula as respostas das chamadas HTTP.
+type MockRoundTripper struct {
 	mock.Mock
 }
 
-// 2. Implemente o método Do da interface do cliente HTTP
-func (m *MockHTTPClient) Do(req *http.Request) (*http.Response, error) {
+// Implementa a interface http.RoundTripper para o mock.
+func (m *MockRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	args := m.Called(req)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
 	return args.Get(0).(*http.Response), args.Error(1)
 }
 
-// --- Testes ---
-
-func TestSearchCep_ServiceB(t *testing.T) {
-	t.Run("Sucesso - Encontra CEP", func(t *testing.T) {
-		// Corpo da resposta simulada da API ViaCEP
-		jsonResponse := `{"localidade": "São Paulo"}`
-		r := io.NopCloser(bytes.NewReader([]byte(jsonResponse)))
-		
-		mockClient := new(MockHTTPClient)
-		// Configure o mock: quando Do for chamado, retorne esta resposta
-		mockClient.On("Do", mock.Anything).Return(&http.Response{
-			StatusCode: http.StatusOK,
-			Body:       r,
-		}, nil)
-
-		local, err := SearchCep(context.Background(), "01001000", &http.Client{Transport: mockClient.RoundTripper()})
-
-		assert.NoError(t, err)
-		assert.NotNil(t, local)
-		assert.Equal(t, "São Paulo", local.Localidade)
-		mockClient.AssertExpectations(t) // Verifica se o mock foi chamado
-	})
-
-	t.Run("Falha - CEP não encontrado", func(t *testing.T) {
-		jsonResponse := `{"erro": true}`
-		r := io.NopCloser(bytes.NewReader([]byte(jsonResponse)))
-		
-		mockClient := new(MockHTTPClient)
-		mockClient.On("Do", mock.Anything).Return(&http.Response{
-			StatusCode: http.StatusOK, // ViaCEP retorna 200 mesmo com erro no corpo
-			Body:       r,
-		}, nil)
-
-		local, err := SearchCep(context.Background(), "99999999", &http.Client{Transport: mockClient.RoundTripper()})
-
-		assert.Error(t, err)
-		assert.Nil(t, local)
-		assert.Equal(t, "can not find zipcode", err.Error())
-		mockClient.AssertExpectations(t)
-	})
+// Inicializa o tracer para evitar panic nos testes.
+func TestMain(m *testing.M) {
+	provider := noop.NewTracerProvider()
+	otel.SetTracerProvider(provider)
+	tracer = provider.Tracer("test-tracer-b")
+	os.Exit(m.Run())
 }
 
-// Vamos testar o weatherHandler, que orquestra tudo
+// Testa o fluxo completo do handler principal.
 func TestWeatherHandler_ServiceB(t *testing.T) {
-
-	// O Testify não tem um mock nativo para http.Client, então usamos uma técnica comum:
-	// mockamos o `Transport` do cliente.
-	
-	// Crie uma struct que implementa a interface http.RoundTripper
-	type MockRoundTripper struct {
-		mock.Mock
-	}
-
-	func (m *MockRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-		args := m.Called(req)
-		return args.Get(0).(*http.Response), args.Error(1)
-	}
+	weatherApiKey = "test-key"
 
 	t.Run("Cenário de Sucesso Completo", func(t *testing.T) {
+		//Prepara o mock do transport
 		mockTransport := new(MockRoundTripper)
-		
+		testClient := &http.Client{Transport: mockTransport}
+
 		// Simula a resposta do ViaCEP
 		viaCepRespBody := io.NopCloser(strings.NewReader(`{"localidade": "Florianopolis"}`))
 		viaCepResp := &http.Response{StatusCode: 200, Body: viaCepRespBody}
 
-		// Simula a resposta da WeatherAPI
+		//Simula a resposta da WeatherAPI
 		weatherRespBody := io.NopCloser(strings.NewReader(`{"current": {"temp_c": 28.5}}`))
 		weatherResp := &http.Response{StatusCode: 200, Body: weatherRespBody}
 
-		// Configura o mock para responder de acordo com a URL da requisição
+		//Configura o mock para responder de acordo com a URL da requisição
 		mockTransport.On("RoundTrip", mock.MatchedBy(func(req *http.Request) bool {
 			return strings.Contains(req.URL.Host, "viacep.com.br")
-		})).Return(viaCepResp, nil).Once() // Responde uma vez
+		})).Return(viaCepResp, nil).Once()
 
 		mockTransport.On("RoundTrip", mock.MatchedBy(func(req *http.Request) bool {
 			return strings.Contains(req.URL.Host, "api.weatherapi.com")
-		})).Return(weatherResp, nil).Once() // Responde uma vez
+		})).Return(weatherResp, nil).Once()
 
-		// Injeta o transport mockado no cliente
-		testClient := &http.Client{Transport: mockTransport}
-
-		// Cria uma versão do handler que usa nosso cliente mockado
-		testHandler := func(w http.ResponseWriter, r *http.Request) {
-			// Simula a lógica do handler original, mas injetando o cliente
+		//Cria um handler que usa o cliente mockado para o teste
+		handlerToTest := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
 			cep := r.URL.Path[len("/weather/"):]
 			local, _ := SearchCep(ctx, cep, testClient)
 			clima, _ := GetWeather(ctx, local.Localidade, testClient)
-			
+
 			response := TemperaturaFinal{
 				City:  local.Localidade,
 				TempC: clima.Current.TempC,
@@ -125,44 +79,71 @@ func TestWeatherHandler_ServiceB(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			json.NewEncoder(w).Encode(response)
-		}
+		})
 
+		//Executa a requisição de teste
 		req := httptest.NewRequest(http.MethodGet, "/weather/88010000", nil)
 		rr := httptest.NewRecorder()
+		handlerToTest.ServeHTTP(rr, req)
 
-		testHandler(rr, req)
-		
+		//Verifica os resultados
 		assert.Equal(t, http.StatusOK, rr.Code)
-		expectedJson := `{"city":"Florianopolis","temp_C":28.5,"temp_F":83.3,"temp_K":301.5}`
-		assert.JSONEq(t, expectedJson, rr.Body.String())
+
+		// Decodifica a resposta para verificar os campos individualmente
+		var actualResponse TemperaturaFinal
+		err := json.Unmarshal(rr.Body.Bytes(), &actualResponse)
+		assert.NoError(t, err)
+
+		assert.Equal(t, "Florianopolis", actualResponse.City)
+		assert.Equal(t, 28.5, actualResponse.TempC)
+		assert.InDelta(t, 83.3, actualResponse.TempF, 0.001)
+		assert.Equal(t, 301.5, actualResponse.TempK)
+
 		mockTransport.AssertExpectations(t)
 	})
 
 	t.Run("Cenário de Falha - CEP não encontrado", func(t *testing.T) {
 		mockTransport := new(MockRoundTripper)
-		
-		// Simula a resposta de erro do ViaCEP
-		viaCepRespBody := io.NopCloser(strings.NewReader(`{"erro": true}`))
-		viaCepResp := &http.Response{StatusCode: 200, Body: viaCepRespBody}
-
-		mockTransport.On("RoundTrip", mock.Anything).Return(viaCepResp, nil).Once()
 		testClient := &http.Client{Transport: mockTransport}
 
-		// Para testar o handler diretamente, o mais simples é chamar a lógica dele
+		//Simula a resposta de erro do ViaCEP
+		viaCepRespBody := io.NopCloser(strings.NewReader(`{"erro": true}`))
+		viaCepResp := &http.Response{StatusCode: 200, Body: viaCepRespBody}
+		mockTransport.On("RoundTrip", mock.MatchedBy(func(req *http.Request) bool {
+			return strings.Contains(req.URL.Host, "viacep.com.br")
+		})).Return(viaCepResp, nil).Once()
+
+		//Cria um handler que usa o cliente mockado para este teste
+		handlerToTest := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := r.Context()
+			cep := r.URL.Path[len("/weather/"):]
+			_, err := SearchCep(ctx, cep, testClient)
+
+			if err != nil {
+				if err.Error() == "can not find zipcode" {
+					http.Error(w, err.Error(), http.StatusNotFound)
+				} else {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+				}
+				return
+			}
+		})
+
 		req := httptest.NewRequest(http.MethodGet, "/weather/99999999", nil)
 		rr := httptest.NewRecorder()
+		handlerToTest.ServeHTTP(rr, req)
 
-		// Como o handler original tem muita lógica, vamos simular seu comportamento
-		local, err := SearchCep(req.Context(), "99999999", testClient)
-		
-		// Assertivas sobre o erro retornado pela função que falhou
-		assert.Nil(t, local)
-		assert.NotNil(t, err)
-		assert.Equal(t, "can not find zipcode", err.Error())
-		
-		// Testando o handler real com o erro simulado
-		handler := http.HandlerFunc(weatherHandler)
-		// Como não podemos injetar o cliente no handler diretamente, testamos as unidades (SearchCep/GetWeather)
-		// e confiamos na integração. A abordagem acima com o `testHandler` é mais completa para um teste de unidade do handler.
+		// Verifica o erro 404
+		assert.Equal(t, http.StatusNotFound, rr.Code)
+		assert.Equal(t, "can not find zipcode\n", rr.Body.String())
+		mockTransport.AssertExpectations(t)
+	})
+
+	t.Run("Cenário de Falha - CEP inválido", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/weather/123", nil)
+		rr := httptest.NewRecorder()
+		weatherHandler(rr, req)
+		assert.Equal(t, http.StatusUnprocessableEntity, rr.Code)
+		assert.Equal(t, "invalid zipcode\n", rr.Body.String())
 	})
 }

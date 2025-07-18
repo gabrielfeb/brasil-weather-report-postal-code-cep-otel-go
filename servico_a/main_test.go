@@ -12,23 +12,22 @@ import (
 	"go.opentelemetry.io/otel/trace/noop"
 )
 
-// TestMain é executada antes de todos os testes neste pacote.
 func TestMain(m *testing.M) {
-	// 1. Cria um provedor de tracer "noop" (que não faz nada).
+	//Cria um provedor de tracer "noop".
 	provider := noop.NewTracerProvider()
 	otel.SetTracerProvider(provider)
 
-	// 2. **Passo crucial:** Inicializa a variável global `tracer`
+	//**Passo crucial:** Inicializa a variável global `tracer`
 	// que é usada pelos handlers. Sem isso, ela permanece nula.
 	tracer = provider.Tracer("test-tracer")
 
-	// 3. Roda todos os testes do pacote.
+	//Roda todos os testes do pacote.
 	os.Exit(m.Run())
 }
 
 // Teste para a função de validação de CEP
 func TestIsValidCep_ServiceA(t *testing.T) {
-	// Tabela de casos de teste
+	//Tabela de casos de teste
 	testCases := []struct {
 		name     string
 		cep      string
@@ -51,43 +50,42 @@ func TestIsValidCep_ServiceA(t *testing.T) {
 // Teste para o handler principal
 func TestHandleCepRequest(t *testing.T) {
 
-	// 1. Crie um servidor de teste para simular o Serviço B
+	//Cria um servidor de teste para simular o Serviço B
 	mockServiceB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// O mock do Serviço B apenas retorna um status OK e um corpo fixo
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"city":"Test City","temp_C":25.0,"temp_F":77.0,"temp_K":298.0}`))
 	}))
 	defer mockServiceB.Close()
 
-	// 2. Defina a variável de ambiente para que o Serviço A aponte para nosso mock
+	//Define a variável de ambiente para que o Serviço A aponte para o mock
 	os.Setenv("SERVICE_B_URL", mockServiceB.URL)
 	defer os.Unsetenv("SERVICE_B_URL")
 
 	t.Run("Cenário de Sucesso com CEP válido", func(t *testing.T) {
-		// Cria o corpo da requisição com um CEP válido
+		//Cria o corpo da requisição com um CEP válido
 		requestBody := bytes.NewBuffer([]byte(`{"cep": "01001000"}`))
 		req := httptest.NewRequest(http.MethodPost, "/", requestBody)
 		rr := httptest.NewRecorder() // Grava a resposta
 
 		handleCepRequest(rr, req)
 
-		// Verifica se o status code é OK (200)
+		//Verifica se o status code é OK (200)
 		assert.Equal(t, http.StatusOK, rr.Code)
-		// Verifica se o corpo da resposta é o que o mock do Serviço B retornou
+		//Verifica se a resposta é o que o mock do Serviço B retornou
 		assert.JSONEq(t, `{"city":"Test City","temp_C":25.0,"temp_F":77.0,"temp_K":298.0}`, rr.Body.String())
 	})
 
 	t.Run("Cenário de Falha com CEP inválido", func(t *testing.T) {
-		// Cria o corpo da requisição com um CEP inválido
+		//Cria o corpo da requisição com um CEP inválido
 		requestBody := bytes.NewBuffer([]byte(`{"cep": "123"}`))
 		req := httptest.NewRequest(http.MethodPost, "/", requestBody)
 		rr := httptest.NewRecorder()
 
 		handleCepRequest(rr, req)
 
-		// Verifica se o status code é 422
+		//Verifica se o status code é 422
 		assert.Equal(t, http.StatusUnprocessableEntity, rr.Code)
-		// Verifica a mensagem de erro
+		//Verifica a mensagem de erro
 		assert.Equal(t, "invalid zipcode", rr.Body.String())
 	})
 
@@ -97,7 +95,7 @@ func TestHandleCepRequest(t *testing.T) {
 
 		handleCepRequest(rr, req)
 
-		// Verifica se o status code é 405
+		//Verifica se o status code é 405
 		assert.Equal(t, http.StatusMethodNotAllowed, rr.Code)
 	})
 }

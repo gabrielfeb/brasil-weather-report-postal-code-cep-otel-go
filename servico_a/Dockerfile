@@ -7,6 +7,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
+
 RUN CGO_ENABLED=0 GOOS=linux go build -o /service-a-app
 
 # Stage 2: Run
@@ -18,4 +19,4 @@ COPY --from=builder /service-a-app .
 
 EXPOSE 8080
 
-CMD ["./servico_a_app"]
+CMD ["./service-a-app"]

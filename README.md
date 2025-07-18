@@ -126,6 +126,3 @@ can not find zipcode
     - O tempo total no `service-a`.
     - A chamada HTTP para o `service-b`.
     - Dentro do `service-b`, os spans específicos para `get-location-from-cep-api` e `get-weather-from-weather-api`, medindo o tempo gasto em cada chamada externa.
-
-![Exemplo de Trace no Zipkin](https://opentelemetry.io/img/docs/getting-started/go/zipkin-trace.png)
-*(Imagem ilustrativa de como um trace aparece no Zipkin)*

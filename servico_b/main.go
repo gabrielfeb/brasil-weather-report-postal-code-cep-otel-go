@@ -31,20 +31,17 @@ var (
 	weatherApiKey string
 )
 
-// Local representa a resposta da API ViaCEP
 type Local struct {
 	Localidade string `json:"localidade"`
 	Erro       bool   `json:"erro"`
 }
 
-// Clima representa a resposta da WeatherAPI
 type Clima struct {
 	Current struct {
 		TempC float64 `json:"temp_c"`
 	} `json:"current"`
 }
 
-// TemperaturaFinal é a struct final da resposta, conforme solicitado
 type TemperaturaFinal struct {
 	City  string  `json:"city"`
 	TempC float64 `json:"temp_C"`
@@ -52,33 +49,24 @@ type TemperaturaFinal struct {
 	TempK float64 `json:"temp_K"`
 }
 
-// initTracer inicializa o OpenTelemetry Tracer
 func initTracer(serviceName string) (*sdktrace.TracerProvider, error) {
 	ctx := context.Background()
 	otelAgentAddr, ok := os.LookupEnv("OTEL_EXPORTER_OTLP_ENDPOINT")
 	if !ok {
 		otelAgentAddr = "otel-collector:4317"
 	}
-
 	conn, err := grpc.NewClient(otelAgentAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create gRPC connection to collector: %w", err)
 	}
-
 	traceExporter, err := otlptracegrpc.New(ctx, otlptracegrpc.WithGRPCConn(conn))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create trace exporter: %w", err)
 	}
-
-	res, err := resource.New(ctx,
-		resource.WithAttributes(
-			semconv.ServiceNameKey.String(serviceName),
-		),
-	)
+	res, err := resource.New(ctx, resource.WithAttributes(semconv.ServiceNameKey.String(serviceName)))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create resource: %w", err)
 	}
-
 	bsp := sdktrace.NewBatchSpanProcessor(traceExporter)
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithSampler(sdktrace.AlwaysSample()),
@@ -87,7 +75,6 @@ func initTracer(serviceName string) (*sdktrace.TracerProvider, error) {
 	)
 	otel.SetTracerProvider(tp)
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
-
 	tracer = otel.Tracer(serviceName)
 	return tp, nil
 }
@@ -98,7 +85,6 @@ func main() {
 	if !ok || weatherApiKey == "" {
 		log.Fatal("WEATHER_API_KEY environment variable not set")
 	}
-
 	tp, err := initTracer("service-b")
 	if err != nil {
 		log.Fatalf("failed to initialize tracer: %v", err)
@@ -108,29 +94,31 @@ func main() {
 			log.Printf("Error shutting down tracer provider: %v", err)
 		}
 	}()
-
 	mux := http.NewServeMux()
 	handler := otelhttp.NewHandler(http.HandlerFunc(weatherHandler), "WeatherHandler")
 	mux.Handle("/weather/", handler)
-
 	log.Println("Service B started on port 8081")
 	go func() {
 		if err := http.ListenAndServe(":8081", mux); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("ListenAndServe failed: %v", err)
 		}
 	}()
-
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	<-stop
 	log.Println("Shutting down server...")
 }
 
-// weatherHandler orquestra a lógica principal
 func weatherHandler(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	_, span := tracer.Start(ctx, "weatherHandler-orchestration")
 	defer span.End()
+
+	//Cria o cliente real que será usado na aplicação
+	client := &http.Client{
+		Transport: otelhttp.NewTransport(http.DefaultTransport),
+		Timeout:   5 * time.Second,
+	}
 
 	cep := r.URL.Path[len("/weather/"):]
 
@@ -140,7 +128,8 @@ func weatherHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	span.SetAttributes(attribute.String("cep.input", cep))
 
-	local, err := SearchCep(ctx, cep)
+	//Passa o cliente como dependência
+	local, err := SearchCep(ctx, cep, client)
 	if err != nil {
 		if err.Error() == "can not find zipcode" {
 			http.Error(w, err.Error(), http.StatusNotFound)
@@ -151,7 +140,8 @@ func weatherHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	span.SetAttributes(attribute.String("city.name", local.Localidade))
 
-	clima, err := GetWeather(ctx, local.Localidade)
+	//Passa o cliente como dependência
+	clima, err := GetWeather(ctx, local.Localidade, client)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -179,12 +169,10 @@ func isValidCep(cep string) bool {
 	return match
 }
 
-// SearchCep busca os dados de localização do CEP
-func SearchCep(ctx context.Context, cep string) (*Local, error) {
+func SearchCep(ctx context.Context, cep string, client *http.Client) (*Local, error) {
 	ctx, span := tracer.Start(ctx, "get-location-from-cep-api (SearchCep)")
 	defer span.End()
 
-	client := http.Client{Transport: otelhttp.NewTransport(http.DefaultTransport), Timeout: 5 * time.Second}
 	req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("https://viacep.com.br/ws/%s/json/", cep), nil)
 	if err != nil {
 		span.RecordError(err)
@@ -211,12 +199,10 @@ func SearchCep(ctx context.Context, cep string) (*Local, error) {
 	return &local, nil
 }
 
-// GetWeather busca os dados de clima da cidade
-func GetWeather(ctx context.Context, city string) (*Clima, error) {
+func GetWeather(ctx context.Context, city string, client *http.Client) (*Clima, error) {
 	ctx, span := tracer.Start(ctx, "get-weather-from-weather-api (GetWeather)")
 	defer span.End()
 
-	client := http.Client{Transport: otelhttp.NewTransport(http.DefaultTransport), Timeout: 5 * time.Second}
 	encodedCity := url.QueryEscape(city)
 	url := fmt.Sprintf("https://api.weatherapi.com/v1/current.json?key=%s&q=%s&aqi=no", weatherApiKey, encodedCity)
 

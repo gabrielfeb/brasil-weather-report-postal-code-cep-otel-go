@@ -1,8 +1,8 @@
-version: '3.8'
-
+# A linha 'version' foi removida por ser obsoleta
 services:
   service-a:
-    build: ./service-a
+    # Corrigido de 'service-a' para 'servico_a'
+    build: ./servico_a
     container_name: service-a
     ports:
       - "8080:8080"
@@ -16,12 +16,13 @@ services:
       - app-network
 
   service-b:
-    build: ./service-b
+    # Corrigido de 'service-b' para 'servico_b'
+    build: ./servico_b
     container_name: service-b
     ports:
       - "8081:8081"
     env_file:
-      - .env # Carrega a variável WEATHER_API_KEY do arquivo .env
+      - .env
     environment:
       - OTEL_EXPORTER_OTLP_ENDPOINT=otel-collector:4317
     depends_on:
@@ -36,8 +37,8 @@ services:
     volumes:
       - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml
     ports:
-      - "4317:4317" # OTLP gRPC receiver
-      - "4318:4318" # OTLP HTTP receiver
+      - "4317:4317"
+      - "4318:4318"
     depends_on:
       - zipkin
     networks:

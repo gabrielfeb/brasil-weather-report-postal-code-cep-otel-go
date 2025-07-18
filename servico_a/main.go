@@ -27,7 +27,7 @@ import (
 
 var tracer trace.Tracer
 
-// initTracer inicializa o OpenTelemetry Tracer
+// Inicializa o OpenTelemetry Tracer
 func initTracer(serviceName string) (*sdktrace.TracerProvider, error) {
 	ctx := context.Background()
 	otelAgentAddr, ok := os.LookupEnv("OTEL_EXPORTER_OTLP_ENDPOINT")
@@ -67,7 +67,7 @@ func initTracer(serviceName string) (*sdktrace.TracerProvider, error) {
 	return tp, nil
 }
 
-// CepInput é a struct para o corpo da requisição de entrada
+// Struct para o corpo da requisição de entrada
 type CepInput struct {
 	Cep string `json:"cep"`
 }
@@ -84,7 +84,7 @@ func main() {
 	}()
 
 	mux := http.NewServeMux()
-	// Usando otelhttp.NewHandler para instrumentar o handler
+	//Usando otelhttp.NewHandler para instrumentar o handler
 	handler := otelhttp.NewHandler(http.HandlerFunc(handleCepRequest), "CepHandler")
 	mux.Handle("/", handler)
 
@@ -95,7 +95,6 @@ func main() {
 		}
 	}()
 
-	// Graceful shutdown
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	<-stop
@@ -108,7 +107,7 @@ func handleCepRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Extrai o contexto e o tracer para criar um span
+	//Extrai o contexto e o tracer para criar um span
 	ctx := r.Context()
 	_, span := tracer.Start(ctx, "handleCepRequest")
 	defer span.End()
@@ -126,25 +125,23 @@ func handleCepRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validação do CEP
 	if !isValidCep(input.Cep) {
 		w.WriteHeader(http.StatusUnprocessableEntity) // 422
 		w.Write([]byte("invalid zipcode"))
 		return
 	}
 
-	// Encaminha para o Serviço B
 	forwardRequestToServiceB(w, r, input.Cep)
 }
 
 func isValidCep(cep string) bool {
-	// Regex para validar se a string contém exatamente 8 dígitos
+	//Valida se a string contém exatamente 8 dígitos
 	match, _ := regexp.MatchString(`^\d{8}$`, cep)
 	return match
 }
 
 func forwardRequestToServiceB(w http.ResponseWriter, r *http.Request, cep string) {
-	// Extrai o contexto para propagar o trace
+	//Extrai o contexto para propagar o trace
 	ctx := r.Context()
 	_, span := tracer.Start(ctx, "forwardRequestToServiceB")
 	defer span.End()
@@ -156,7 +153,7 @@ func forwardRequestToServiceB(w http.ResponseWriter, r *http.Request, cep string
 
 	targetURL := fmt.Sprintf("%s/weather/%s", serviceB_URL, cep)
 
-	// Cria um cliente HTTP instrumentado pelo OTEL
+	//Cria um cliente HTTP instrumentado pelo OTEL
 	client := http.Client{
 		Transport: otelhttp.NewTransport(http.DefaultTransport),
 		Timeout:   10 * time.Second,
@@ -168,7 +165,7 @@ func forwardRequestToServiceB(w http.ResponseWriter, r *http.Request, cep string
 		return
 	}
 
-	// A propagação do trace é feita automaticamente pelo otelhttp
+	// Propaga o contexto do span para o cabeçalho HTTP
 	resp, err := client.Do(req)
 	if err != nil {
 		http.Error(w, "Failed to call service B", http.StatusInternalServerError)
@@ -176,7 +173,7 @@ func forwardRequestToServiceB(w http.ResponseWriter, r *http.Request, cep string
 	}
 	defer resp.Body.Close()
 
-	// Repassa a resposta do Serviço B para o cliente original
+	//Repassa a resposta do Serviço B para o cliente original
 	w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
